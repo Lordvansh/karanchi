@@ -6,7 +6,7 @@ import pytz
 app = Flask(__name__)
 
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/123.0 Safari/537.36"
-LODA = "bm9haWhkZXZtXzZpeWcwYThsMHE6"  # SSO Basic (for Authorization)
+LODA = "bm9haWhkZXZtXzZpeWcwYThsMHE6"  # SSO Basic (b64)
 
 def format_proxy(proxy_string):
     if not proxy_string:
@@ -26,7 +26,7 @@ def format_proxy(proxy_string):
         return {"http": pstr, "https": pstr}
     return None
 
-def extract_details(session, token, account_id, proxies=None, ua=None):
+def extract_crunchyroll_details(session, token, account_id, proxies=None, ua=None):
     UA_final = ua or UA
     subs_headers = {
         "Host": "www.crunchyroll.com",
@@ -43,17 +43,17 @@ def extract_details(session, token, account_id, proxies=None, ua=None):
             timeout=20
         )
         if subs_res.status_code != 200:
-            return None, "Failed to fetch subscription"
+            return None
         data = subs_res.json()
     except Exception as e:
-        return None, f"Sub fetch error: {e}"
+        return None
 
     if data.get("containerType") == "free":
         return {
             "message": "Free Account",
             "plan": "Free",
             "status": "free"
-        }, None
+        }
 
     subscriptions = data.get("subscriptions", [])
     plan_text = plan_value = active_free_trial = next_renewal_date = status = "N/A"
@@ -80,7 +80,7 @@ def extract_details(session, token, account_id, proxies=None, ua=None):
             payment_info = payment_name or payment_type or "N/A"
         payment_method_type = payment_type or "N/A"
     else:
-        # fallback for country (profile endpoint)
+        # fallback for country
         try:
             profile_headers = {
                 "User-Agent": UA,
@@ -122,7 +122,7 @@ def extract_details(session, token, account_id, proxies=None, ua=None):
         "status": status,
         "renewal": formatted_renewal_date,
         "days_left": days_left
-    }, None
+    }
 
 def crunchyroll_account_details(email, password, proxy=None):
     session = requests.Session()
@@ -189,7 +189,6 @@ def crunchyroll_account_details(email, password, proxy=None):
             proxies=proxies,
             timeout=20
         )
-        print("Token Endpoint Response:", token_res.text)  # <--- DEBUG LINE
         if token_res.status_code != 200:
             return {
                 "message": "Failed to get token",
@@ -207,9 +206,7 @@ def crunchyroll_account_details(email, password, proxy=None):
         return {"message": f"Token error: {e}", "status": "error"}
 
     # 3. Extract account details
-    details, error = extract_details(session, token, account_id, proxies=proxies, ua=UA)
-    if error:
-        return {"message": error, "status": "error"}
+    details = extract_crunchyroll_details(session, token, account_id, proxies=proxies, ua=UA)
     if not details or details.get("plan") == "Free":
         return {
             "message": "Free Account",
