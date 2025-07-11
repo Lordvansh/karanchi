@@ -6,7 +6,7 @@ import pytz
 app = Flask(__name__)
 
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/123.0 Safari/537.36"
-LODA = "bm9haWhkZXZtXzZpeWcwYThsMHE6"  # SSO Basic
+LODA = "bm9haWhkZXZtXzZpeWcwYThsMHE6"  # SSO Basic (for Authorization)
 
 def format_proxy(proxy_string):
     if not proxy_string:
@@ -189,6 +189,7 @@ def crunchyroll_account_details(email, password, proxy=None):
             proxies=proxies,
             timeout=20
         )
+        print("Token Endpoint Response:", token_res.text)  # <--- DEBUG LINE
         if token_res.status_code != 200:
             return {
                 "message": "Failed to get token",
