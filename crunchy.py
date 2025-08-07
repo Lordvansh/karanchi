@@ -114,7 +114,7 @@ def fetch_web_account_details(session, token, email, password, proxies=None, ua=
         return f"Exception fetching subs: {e}", None
 
     if data.get("containerType") == "free":
-        msg = "❎ Free Account"
+        msg = "Free Account"
         return msg, {
             "Account": f"{email}:{password}",
             "Country": "N/A",
@@ -177,7 +177,7 @@ def fetch_web_account_details(session, token, email, password, proxies=None, ua=
         formatted_renewal_date = next_renewal_date
         days_left = "N/A"
 
-    msg = "✅ Premium Account" if status == "active" else "✅ Account Found"
+    msg = "Premium Account" if status == "active" else "Account Found"
     details = {
         "Account": f"{email}:{password}",
         "Country": country_code,
@@ -196,19 +196,19 @@ def check():
     proxy = request.values.get("proxy", "")
 
     if ":" not in combo or not combo:
-        return "❌ Use ?email=email:pass&proxy=proxy (proxy optional)", 400
+        return "Response : Login Failed\nSuccess : False", 400
     email, password = combo.split(":", 1)
     if not email or not password:
-        return "❌ Missing email or password", 400
+        return "Response : Login Failed\nSuccess : False", 400
 
     token, login_err, session = get_access_token(email, password, proxy if proxy else None)
     if not token:
-        return f"❌ {email}:{password} - {login_err}", 200, {"Content-Type": "text/plain"}
+        return "Response : Login Failed\nSuccess : False", 200, {"Content-Type": "text/plain"}
 
     msg, details = fetch_web_account_details(session, token, email, password, proxies=format_proxy(proxy) if proxy else None, ua=UA)
     if not details:
-        # This is your requested N/A fallback!
-        resp_str = f"""{msg}
+        resp_str = f"""Response : Login Success
+Success : True
 
 Account: {email}:{password}
 Country: N/A
@@ -221,7 +221,8 @@ Days Left: N/A
 """
         return resp_str, 200, {"Content-Type": "text/plain"}
 
-    resp_str = f"""{msg}
+    resp_str = f"""Response : Login Success
+Success : True
 
 Account: {details['Account']}
 Country: {details['Country']}
